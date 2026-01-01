@@ -1,0 +1,572 @@
+# "tempest_local" sensors pull directly from the local HA data source using the WeatherFlow integration
+# "tempest_cloud" sensors pull from the Tempest website for your station using the WeatherFlow Cloud integration
+
+  # -------------------------------------------------------------------------
+  # Rain rates
+  # -------------------------------------------------------------------------
+  - sensor:
+      - name: "Tempest Rain Intensity"
+        unique_id: tempest_local_rain_intensity
+        icon: mdi:weather-pouring
+        attributes:
+          attribution: "Custom sensor"
+        state: >
+         {% set rate = states('sensor.tempest_local_precipitation_intensity') | float(0) %}
+         {% if rate == 0 %}
+          None
+         {% elif rate < 0.01 %}
+          Very Light
+         {% elif rate < 0.04 %}
+          Light
+         {% elif rate < 0.16 %}
+          Moderate
+         {% elif rate < 0.63 %}
+          Heavy
+         {% elif rate < 1.97 %}
+          Very Heavy
+         {% else %}
+          Extreme
+         {% endif %}
+
+      - name: "Tempest Precipitation Intensity Rounded"
+        unique_id: tempest_local_precipitation_intensity_rounded
+        icon: mdi:weather-rainy
+        unit_of_measurement: "in/hr"
+        state_class: measurement
+        attributes:
+          attribution: "Custom sensor"
+        state: >
+          {{ states('sensor.tempest_local_precipitation_intensity') | float(0) | round(1) }}
+
+
+  # --------------------------------------------------------------------------
+  # Dew Point Spread (Fog/Condensation Risk Indicator)
+  # --------------------------------------------------------------------------
+  - sensor:
+      - name: "Tempest Dew Point Spread"
+        unique_id: tempest_local_dew_point_spread
+        unit_of_measurement: "°F"
+        state_class: measurement
+        attributes:
+          attribution: "Custom sensor"
+          fog_risk: >
+            {% set spread = states('sensor.tempest_local_dew_point_spread') | float(999) %}
+            {% if spread < 3 %}
+              High - Fog/frost very likely
+            {% elif spread < 5 %}
+              Moderate - Fog/frost possible
+            {% else %}
+              Low
+            {% endif %}
+        availability: >
+          {{ is_number(states('sensor.tempest_local_temperature'))
+             and is_number(states('sensor.tempest_local_dew_point')) }}
+        state: >
+          {% set temp = states('sensor.tempest_local_temperature') | float %}
+          {% set dewpt = states('sensor.tempest_local_dew_point') | float %}
+          {{ (temp - dewpt) | round(1) }}
+
+  # --------------------------------------------------------------------------
+  # Lightning Safety Monitoring
+  # --------------------------------------------------------------------------
+  - sensor:
+      - name: "Lightning Time Since Last Strike"
+        unique_id: lightning_time_since_last_strike
+        device_class: timestamp
+        attributes:
+          attribution: "Custom sensor"
+          safe_to_go_outside: >
+            {% set last = states('sensor.tempest_cloud_lightning_last_strike') %}
+            {% if last == 'unknown' or last == 'unavailable' %}
+              Yes - No recent strikes detected
+            {% else %}
+              {% set minutes_ago = (as_timestamp(now()) - as_timestamp(last)) / 60 %}
+              {% if minutes_ago >= 30 %}
+                Yes - Last strike {{ minutes_ago | int }} minutes ago
+              {% else %}
+                No - Wait {{ (30 - minutes_ago) | int }} more minutes
+              {% endif %}
+            {% endif %}
+        state: >
+          {{ states('sensor.tempest_cloud_lightning_last_strike') }}
+
+      - name: "WBGT Heat Risk Level"
+        unique_id: wbgt_heat_risk_level
+        attributes:
+          attribution: "Custom sensor"
+        state: >
+          {% set wbgt = states('sensor.tempest_cloud_wet_bulb_globe_temperature') | float(0) %}
+          {% if wbgt < 80 %}
+            Low
+          {% elif wbgt < 85 %}
+            Moderate
+          {% elif wbgt < 88 %}
+            High
+          {% elif wbgt < 90 %}
+            Very High
+          {% else %}
+            Extreme
+          {% endif %}
+
+  # --------------------------------------------------------------------------
+  # Weather - Pressure Calculations
+  # --------------------------------------------------------------------------
+  - sensor:
+      - name: "Tempest Sea Level Pressure"
+        unique_id: tempest_local_sea_level_pressure
+        unit_of_measurement: "inHg"
+        device_class: atmospheric_pressure
+        state_class: measurement
+        icon: mdi:gauge
+        attributes:
+          attribution: "Custom sensor"
+        availability: >
+          {{ states('sensor.tempest_local_air_pressure') | float(none) is not none }}
+        state: >
+          {# Get station pressure and convert inHg to mb #}
+          {% set p_sta_inhg = states('sensor.tempest_local_air_pressure') | float(0) %}
+          {% set p_sta = p_sta_inhg * 33.8639 %}
+
+          {# Elevation and sensor height #}
+          {% set h_el = 682 * 0.3048 %}   {# ground elevation in meters #}
+          {% set h_ag = 2.0 %}            {# sensor height above ground in meters #}
+
+          {# Constants #}
+          {% set P_0 = 1013.25 %}         {# standard sea level pressure, mb #}
+          {% set R_d = 287.05 %}          {# gas constant for dry air, J/(kg·K) #}
+          {% set gamma_s = 0.0065 %}      {# standard lapse rate, K/m #}
+          {% set g = 9.80665 %}           {# gravity, m/s² #}
+          {% set T_0 = 288.15 %}          {# standard sea level temp, K #}
+
+          {# Calculate exponent: g / (R_d × γ_s) #}
+          {% set exp = g / (R_d * gamma_s) %}
+
+          {# Tempest formula #}
+          {% set inner_exp = (R_d * gamma_s) / g %}
+          {% set bracket = 1 + ((P_0 / p_sta) ** inner_exp) * (gamma_s * (h_el + h_ag)) / T_0 %}
+          {% set p_sl_mb = p_sta * (bracket ** exp) %}
+
+          {# Convert back to inHg #}
+          {% set p_sl_inhg = p_sl_mb / 33.8639 %}
+
+          {{ p_sl_inhg }}
+
+  # --------------------------------------------------------------------------
+  # Weather - Precipitation (Metric to Imperial Conversion)
+  # --------------------------------------------------------------------------
+  - sensor:
+      - name: "Tempest Cloud Rain Last Hour Imperial"
+        unique_id: tempest_cloud_rain_last_hour_imperial
+        unit_of_measurement: "in"
+        device_class: precipitation
+        state_class: measurement
+        attributes:
+          attribution: "Custom sensor"
+        availability: >
+          {{ is_number(states('sensor.tempest_cloud_rain_last_hour')) }}
+        state: >
+          {% set mm = states('sensor.tempest_cloud_rain_last_hour') | float(0) %}
+          {{ (mm / 25.4) | round(2) }}
+
+      - name: "Tempest Cloud Precipitation Today Imperial"
+        unique_id: tempest_cloud_precipitation_today_imperial
+        unit_of_measurement: "in"
+        device_class: precipitation
+        state_class: total
+        attributes:
+          attribution: "Custom sensor"
+        availability: >
+          {{ is_number(states('sensor.tempest_cloud_precipitation_today')) }}
+        state: >
+          {% set mm = states('sensor.tempest_cloud_precipitation_today') | float(0) %}
+          {{ (mm / 25.4) | round(2) }}
+
+      - name: "Tempest Cloud Precipitation Yesterday Imperial"
+        unique_id: tempest_cloud_precipitation_yesterday_imperial
+        unit_of_measurement: "in"
+        device_class: precipitation
+        state_class: total
+        attributes:
+          attribution: "Custom sensor"
+        availability: >
+          {{ is_number(states('sensor.tempest_cloud_precipitation_yesterday')) }}
+        state: >
+          {% set mm = states('sensor.tempest_cloud_precipitation_yesterday') | float(0) %}
+          {{ (mm / 25.4) | round(2) }}
+
+      - name: "Precipitation Duration Today Hours"
+        unique_id: tempest_cloud_precipitation_duration_today_hours
+        attributes:
+          attribution: "Custom sensor"
+        state: >
+          {{ (states('sensor.tempest_cloud_precipitation_duration_today') | float / 60) | round(1) }}
+        unit_of_measurement: "h"
+
+      - name: "Precipitation Duration Yesterday Hours"
+        unique_id: tempest_cloud_precipitation_duration_yesterday_hours
+        attributes:
+          attribution: "Custom sensor"
+        state: >
+          {{ (states('sensor.tempest_cloud_precipitation_duration_yesterday') | float / 60) | round(1) }}
+        unit_of_measurement: "h"
+
+# ============================================================================
+# STATISTICS SENSORS
+# ============================================================================
+
+sensor:
+  # --------------------------------------------------------------------------
+  # Wind Gust Statistics - Maximum Values
+  # --------------------------------------------------------------------------
+  - platform: statistics
+    name: Wind Gust Max 1 Hour
+    unique_id: wind_gust_max_1h
+    entity_id: sensor.tempest_local_wind_gust
+    state_characteristic: value_max
+    max_age:
+      hours: 1
+    sampling_size: 5000
+
+  - platform: statistics
+    name: Wind Gust Max 4 Hours
+    unique_id: wind_gust_max_4h
+    entity_id: sensor.tempest_local_wind_gust
+    state_characteristic: value_max
+    max_age:
+      hours: 4
+    sampling_size: 5000
+
+  - platform: statistics
+    name: Wind Gust Max 12 Hours
+    unique_id: wind_gust_max_12h
+    entity_id: sensor.tempest_local_wind_gust
+    state_characteristic: value_max
+    max_age:
+      hours: 12
+    sampling_size: 5000
+
+  - platform: statistics
+    name: Wind Gust Max 24 Hours
+    unique_id: wind_gust_max_24h
+    entity_id: sensor.tempest_local_wind_gust
+    state_characteristic: value_max
+    max_age:
+      hours: 24
+    sampling_size: 5000
+
+  - platform: statistics
+    name: Wind Gust Max 7 Days
+    unique_id: wind_gust_max_1w
+    entity_id: sensor.tempest_local_wind_gust
+    state_characteristic: value_max
+    max_age:
+      days: 7
+    sampling_size: 10000
+
+  - platform: statistics
+    name: Wind Gust Max 30 Days
+    unique_id: wind_gust_max_1month
+    entity_id: sensor.tempest_local_wind_gust
+    state_characteristic: value_max
+    max_age:
+      days: 30
+    sampling_size: 10000
+
+  - platform: statistics
+    name: Wind Gust Max 365 Days
+    unique_id: wind_gust_max_1year
+    entity_id: sensor.tempest_local_wind_gust
+    state_characteristic: value_max
+    max_age:
+      days: 365
+    sampling_size: 20000
+
+
+# ============================================================================
+# SQL SENSORS
+# ============================================================================
+
+sql:
+  # --------------------------------------------------------------------------
+  # Rainfall Totals (Historical Aggregates)
+  # Queries precipitation_yesterday sensor, sums daily readings, converts mm to inches
+  # --------------------------------------------------------------------------
+  - name: "Rainfall Last 7 Days"
+    unique_id: rainfall_last_7_days
+    query: >
+      SELECT ROUND(COALESCE(SUM(daily_precip), 0) / 25.4, 2) as total
+      FROM (
+        SELECT CAST(s1.state AS DECIMAL(10,4)) as daily_precip
+        FROM states s1
+        INNER JOIN states_meta sm ON s1.metadata_id = sm.metadata_id
+        WHERE sm.entity_id = 'sensor.tempest_cloud_precipitation_yesterday'
+          AND s1.state NOT IN ('unknown', 'unavailable', 'none')
+          AND s1.state REGEXP '^[0-9]+(\\.[0-9]+)?$'
+          AND s1.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+          AND s1.last_updated_ts = (
+            SELECT MAX(s2.last_updated_ts)
+            FROM states s2
+            WHERE s2.metadata_id = s1.metadata_id
+              AND DATE(FROM_UNIXTIME(s2.last_updated_ts)) = DATE(FROM_UNIXTIME(s1.last_updated_ts))
+          )
+      ) daily_readings
+    column: "total"
+    unit_of_measurement: "in"
+    device_class: precipitation
+    state_class: total
+
+  - name: "Rainfall Last 30 Days"
+    unique_id: rainfall_last_30_days
+    query: >
+      SELECT ROUND(COALESCE(SUM(daily_precip), 0) / 25.4, 2) as total
+      FROM (
+        SELECT CAST(s1.state AS DECIMAL(10,4)) as daily_precip
+        FROM states s1
+        INNER JOIN states_meta sm ON s1.metadata_id = sm.metadata_id
+        WHERE sm.entity_id = 'sensor.tempest_cloud_precipitation_yesterday'
+          AND s1.state NOT IN ('unknown', 'unavailable', 'none')
+          AND s1.state REGEXP '^[0-9]+(\\.[0-9]+)?$'
+          AND s1.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 30 DAY)
+          AND s1.last_updated_ts = (
+            SELECT MAX(s2.last_updated_ts)
+            FROM states s2
+            WHERE s2.metadata_id = s1.metadata_id
+              AND DATE(FROM_UNIXTIME(s2.last_updated_ts)) = DATE(FROM_UNIXTIME(s1.last_updated_ts))
+          )
+      ) daily_readings
+    column: "total"
+    unit_of_measurement: "in"
+    device_class: precipitation
+    state_class: total
+
+  - name: "Rainfall Last 365 Days"
+    unique_id: rainfall_last_365_days
+    query: >
+      SELECT ROUND(COALESCE(SUM(daily_precip), 0) / 25.4, 2) as total
+      FROM (
+        SELECT CAST(s1.state AS DECIMAL(10,4)) as daily_precip
+        FROM states s1
+        INNER JOIN states_meta sm ON s1.metadata_id = sm.metadata_id
+        WHERE sm.entity_id = 'sensor.tempest_cloud_precipitation_yesterday'
+          AND s1.state NOT IN ('unknown', 'unavailable', 'none')
+          AND s1.state REGEXP '^[0-9]+(\\.[0-9]+)?$'
+          AND s1.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 365 DAY)
+          AND s1.last_updated_ts = (
+            SELECT MAX(s2.last_updated_ts)
+            FROM states s2
+            WHERE s2.metadata_id = s1.metadata_id
+              AND DATE(FROM_UNIXTIME(s2.last_updated_ts)) = DATE(FROM_UNIXTIME(s1.last_updated_ts))
+          )
+      ) daily_readings
+    column: "total"
+    unit_of_measurement: "in"
+    device_class: precipitation
+    state_class: total
+
+  # --------------------------------------------------------------------------
+  # Precipitation Duration Totals (Historical Aggregates)
+  # Sums yesterday's duration values, converts minutes to hours
+  # --------------------------------------------------------------------------
+  - name: "Precipitation Duration Total 7 Days"
+    unique_id: precipitation_duration_total_7_days
+    query: >
+      SELECT COALESCE(ROUND(SUM(daily_total / 60), 1), 0) AS total_hours
+      FROM (
+        SELECT CAST(state AS FLOAT) AS daily_total
+        FROM states
+        INNER JOIN states_meta ON states.metadata_id = states_meta.metadata_id
+        WHERE states_meta.entity_id = 'sensor.tempest_cloud_nearcast_precipitation_duration_yesterday'
+          AND state NOT IN ('unknown', 'unavailable', '')
+          AND last_updated_ts >= UNIX_TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 7 DAY))
+          AND last_updated_ts < UNIX_TIMESTAMP(CURDATE())
+        ORDER BY last_updated_ts DESC
+        LIMIT 7
+      ) AS daily_values
+    column: total_hours
+    unit_of_measurement: hour
+    device_class: duration
+    state_class: total
+
+  - name: "Precipitation Duration Total 30 Days"
+    unique_id: precipitation_duration_total_30_days
+    query: >
+      SELECT COALESCE(ROUND(SUM(daily_total / 60), 1), 0) AS total_hours
+      FROM (
+        SELECT CAST(state AS FLOAT) AS daily_total
+        FROM states
+        INNER JOIN states_meta ON states.metadata_id = states_meta.metadata_id
+        WHERE states_meta.entity_id = 'sensor.tempest_cloud_nearcast_precipitation_duration_yesterday'
+          AND state NOT IN ('unknown', 'unavailable', '')
+          AND last_updated_ts >= UNIX_TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 30 DAY))
+          AND last_updated_ts < UNIX_TIMESTAMP(CURDATE())
+        ORDER BY last_updated_ts DESC
+        LIMIT 30
+      ) AS daily_values
+    column: total_hours
+    unit_of_measurement: hour
+    device_class: duration
+    state_class: total
+
+  - name: "Precipitation Duration Total 365 Days"
+    unique_id: precipitation_duration_total_365_days
+    query: >
+      SELECT COALESCE(ROUND(SUM(daily_total / 60), 1), 0) AS total_hours
+      FROM (
+        SELECT CAST(state AS FLOAT) AS daily_total
+        FROM states
+        INNER JOIN states_meta ON states.metadata_id = states_meta.metadata_id
+        WHERE states_meta.entity_id = 'sensor.tempest_cloud_nearcast_precipitation_duration_yesterday'
+          AND state NOT IN ('unknown', 'unavailable', '')
+          AND last_updated_ts >= UNIX_TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 365 DAY))
+          AND last_updated_ts < UNIX_TIMESTAMP(CURDATE())
+        ORDER BY last_updated_ts DESC
+        LIMIT 365
+      ) AS daily_values
+    column: total_hours
+    unit_of_measurement: hour
+    device_class: duration
+    state_class: total
+
+# --------------------------------------------------------------------------
+# Maximum Temperatures
+# --------------------------------------------------------------------------
+
+  - name: "Tempest Max Temperature 7 Days"
+    unique_id: tempest_local_max_temperature_7_days
+    query: >
+      SELECT ROUND(MAX(CAST(s.state AS DECIMAL(10,2))), 1) AS max_temp
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_temperature'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^-?[0-9]+(\\.[0-9]+)?$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+    column: "max_temp"
+    unit_of_measurement: "°F"
+    device_class: temperature
+    state_class: measurement
+
+  - name: "Tempest Max Temperature 30 Days"
+    unique_id: tempest_local_max_temperature_30_days
+    query: >
+      SELECT ROUND(MAX(CAST(s.state AS DECIMAL(10,2))), 1) AS max_temp
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_temperature'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^-?[0-9]+(\\.[0-9]+)?$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 30 DAY)
+    column: "max_temp"
+    unit_of_measurement: "°F"
+    device_class: temperature
+    state_class: measurement
+
+  - name: "Tempest Max Temperature 365 Days"
+    unique_id: tempest_local_max_temperature_365_days
+    query: >
+      SELECT ROUND(MAX(CAST(s.state AS DECIMAL(10,2))), 1) AS max_temp
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_temperature'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^-?[0-9]+(\\.[0-9]+)?$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 365 DAY)
+    column: "max_temp"
+    unit_of_measurement: "°F"
+    device_class: temperature
+    state_class: measurement
+
+# --------------------------------------------------------------------------
+# Minimum Temperatures
+# --------------------------------------------------------------------------
+
+  - name: "Tempest Min Temperature 7 Days"
+    unique_id: tempest_local_min_temperature_7_days
+    query: >
+      SELECT ROUND(MIN(CAST(s.state AS DECIMAL(10,2))), 1) AS min_temp
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_temperature'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^-?[0-9]+(\\.[0-9]+)?$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+    column: "min_temp"
+    unit_of_measurement: "°F"
+    device_class: temperature
+    state_class: measurement
+
+  - name: "Tempest Min Temperature 30 Days"
+    unique_id: tempest_local_min_temperature_30_days
+    query: >
+      SELECT ROUND(MIN(CAST(s.state AS DECIMAL(10,2))), 1) AS min_temp
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_temperature'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^-?[0-9]+(\\.[0-9]+)?$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 30 DAY)
+    column: "min_temp"
+    unit_of_measurement: "°F"
+    device_class: temperature
+    state_class: measurement
+
+  - name: "Tempest Min Temperature 365 Days"
+    unique_id: tempest_local_min_temperature_365_days
+    query: >
+      SELECT ROUND(MIN(CAST(s.state AS DECIMAL(10,2))), 1) AS min_temp
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_temperature'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^-?[0-9]+(\\.[0-9]+)?$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 365 DAY)
+    column: "min_temp"
+    unit_of_measurement: "°F"
+    device_class: temperature
+    state_class: measurement
+
+# --------------------------------------------------------------------------
+# Lightning Activity Tracking
+# --------------------------------------------------------------------------
+
+  - name: "Lightning Strikes Total 7 Days"
+    unique_id: lightning_strikes_total_7_days
+    query: >
+      SELECT COALESCE(SUM(CAST(s.state AS UNSIGNED)), 0) AS total_strikes
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_lightning_count'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^[0-9]+$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 7 DAY)
+    column: "total_strikes"
+    unit_of_measurement: "strikes"
+    state_class: total
+
+  - name: "Lightning Strikes Total 30 Days"
+    unique_id: lightning_strikes_total_30_days
+    query: >
+      SELECT COALESCE(SUM(CAST(s.state AS UNSIGNED)), 0) AS total_strikes
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_lightning_count'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^[0-9]+$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 30 DAY)
+    column: "total_strikes"
+    unit_of_measurement: "strikes"
+    state_class: total
+
+  - name: "Lightning Strikes Total 365 Days"
+    unique_id: lightning_strikes_total_365_days
+    query: >
+      SELECT COALESCE(SUM(CAST(s.state AS UNSIGNED)), 0) AS total_strikes
+      FROM states s
+      INNER JOIN states_meta sm ON s.metadata_id = sm.metadata_id
+      WHERE sm.entity_id = 'sensor.tempest_local_lightning_count'
+        AND s.state NOT IN ('unknown', 'unavailable', 'none')
+        AND s.state REGEXP '^[0-9]+$'
+        AND s.last_updated_ts >= UNIX_TIMESTAMP(NOW() - INTERVAL 365 DAY)
+    column: "total_strikes"
+    unit_of_measurement: "strikes"
+    state_class: total
